@@ -1,6 +1,8 @@
 import sys
 import struct
 
+MAX_INT = (2**32)
+
 class Instruction:
     def __init__(self, a, b, c, op, val=0):
         self.a = a
@@ -12,22 +14,22 @@ class Instruction:
 class CPU:
     def __init__(self, filename):
         self.reg = [0 for i in range(8)]
-        self.arrays = []
-
-        self.arrays.append([])
+        self.arrays = {}
 
         f = open(filename, 'rb')
-        fbytes = f.read()
-
         values = []
-        for val, in struct.iter_unpack('>I', fbytes):
-            values.append(val)
+        while True:
+            fbytes = f.read(4)
+            if fbytes:
+                val = struct.unpack(">L", fbytes)[0]
+                values.append(val)
+            else:
+                break
 
-        for val in values:
-            self.arrays[0].append(val)
+        zero_array = self.arrays.setdefault(0, [])
+        zero_array.extend(values)
 
         self.pc = 0
-        self.next_array = 1
         self.running = True
 
     def cmov(self, dest, src, cond):
@@ -41,40 +43,50 @@ class CPU:
         self.arrays[self.reg[arr]][self.reg[index]] = self.reg[val]
 
     def add(self, dest, var1, var2):
-        self.reg[dest] = self.reg[var1] + self.reg[var2]
+        self.reg[dest] = int((self.reg[var1] + self.reg[var2]) % (MAX_INT))
 
     def mul(self, dest, var1, var2):
-        self.reg[dest] = self.reg[var1] * self.reg[var2]
+        self.reg[dest] = int((self.reg[var1] * self.reg[var2]) % (MAX_INT))
 
     def div(self, dest, var1, var2):
-        self.reg[dest] = self.reg[var1] / self.reg[var2]
+        self.reg[dest] = int((self.reg[var1] / self.reg[var2]) % (MAX_INT))
 
     def nand(self, dest, var1, var2):
-        self.reg[dest] = int(not (self.reg[var1] & self.reg[var2]))
+        self.reg[dest] = (~(int(self.reg[var1]) & int(self.reg[var2])) % (MAX_INT))
 
     def hlt(self):
         self.running = False
 
     def new_arr(self, dest, size):
-        self.arrays[self.next_array] = []
-        self.reg[dest] = self.next_array
-        self.next_array += 1
+        narr = [0] * self.reg[size]
+        arr_id = 1
+        while arr_id < (MAX_INT):
+            if arr_id in self.arrays:
+                arr_id += 1
+            else:
+                self.arrays[arr_id] = narr
+                self.reg[dest] = arr_id
+                break
 
     def del_arr(self, dest):
-        self.arrays[self.reg[dest]].pop()
+        del self.arrays[self.reg[dest]]
 
     def out(self, val):
-        print(chr(self.reg[val]), end='')
+        sys.stdout.write(chr(self.reg[val]))
 
     def uin(self, val):
-        print("reading to reg[{}]".format(val))
+        input = sys.stdin.read(1)
+        if input != "\n":
+            self.reg[val] = ord(input)
+        else:
+            self.reg[val] = 0xffffffff
 
     def load(self, arr, npc):
         #print("arr: {}, pc: {}".format(arr, npc))
-        narr = self.arrays[self.reg[arr]]
+        narr = self.reg[arr]
         if narr != 0:
-            self.arrays[0] = narr
-        self.pc = npc
+            self.arrays[0] = self.arrays[narr][:]
+        self.pc = self.reg[npc]
 
     def move(self, dest, val):
         #print("dest: {}, value: {}".format(dest, val))
@@ -85,8 +97,8 @@ class CPU:
         sys.exit(1)
 
     def dump_reg(self):
-        for counter, r in enumerate(self.reg):
-            print("Register {}: {}".format(counter, r))
+        for r in self.reg:
+            print(r, end=' ')
 
     def decode(self, inst):
         op = (inst & 0b11110000000000000000000000000000) >> 28
@@ -101,7 +113,7 @@ class CPU:
 
         return Instruction(a, b, c, op)
 
-    def exec(self, inst):
+    def run(self, inst):
         a = inst.a
         b = inst.b
         c = inst.c
@@ -144,21 +156,22 @@ class CPU:
             6: self.nand,
         }
 
+        #print("Opcode: {}".format(op))
         if op > -1 and op < 7:
             three[op](a, b, c)
-            print("{}: {}, {}, {}".format(name[op], a, b, c))
+            #print("{}: {}, {}, {}".format(name[op], a, b, c))
         elif op == 8 or op == 12:
             two[op](b, c)
-            print("{}: {}, {}".format(name[op], b, c))
+            #print("{}: {}, {}".format(name[op], b, c))
         elif op == 9 or op == 10 or op == 11:
             one[op](c)
-            print("{}: {}".format(name[op], c))
+            #print("{}: {}".format(name[op], c))
         elif op == 7:
             self.hlt()
-            print("{}".format(name[op]))
+            #print("{}".format(name[op]))
         elif op == 13:
             self.move(a, val)
-            print("MOVE {} -> Reg[{}]".format(val, a))
+            #print("MOVE {} -> Reg[{}]".format(val, a))
         elif op > 13:
             self.unknown(op)
 
@@ -185,18 +198,22 @@ class CPU:
 
         print("test 3 [LOAD]: {}".format(success))
 
-    def run(self):
-        #while self.running == True:
-        for i in range(20):
+    def cycle(self, max=None):
+        count = 0
+        while self.running == True:
             inst = self.arrays[0][self.pc]
             self.pc += 1
-            self.exec(self.decode(inst))
-            self.dump_reg()
-            print()
+            self.run(self.decode(inst))
+            #self.dump_reg()
+            #print()
+
+            count += 1
+            if count == max:
+                break
 
 if len(sys.argv) != 2:
     print("Needs a file to run!")
     sys.exit(1)
 
 cpu = CPU(sys.argv[1])
-cpu.run()
+cpu.cycle()
